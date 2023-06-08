@@ -65,7 +65,7 @@ jobs:
   unit-test:
     strategy:
       matrix:
-        OS: [ubuntu-20.04, macos-latest]
+        OS: [ ubuntu-20.04, macos-latest ]
     runs-on: ${{ matrix.OS }}
     needs: cache-deps
 
@@ -113,7 +113,7 @@ jobs:
   artifacts:
     name: artifacts (linux)
     runs-on: ubuntu-20.04
-    needs: [cache-deps]
+    needs: [ cache-deps ]
 
     permissions:
       contents: read
@@ -135,6 +135,10 @@ jobs:
         with:
           path: .build
           key: ${{ runner.os }}-tools-${{ hashFiles('.go-version','Makefile') }}
+      - name: Install musl-gcc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
       - name: Build artifacts
         run: ./.github/workflows/scripts/build_artifacts.sh ${{ runner.os }}
       - name: Archive artifacts
@@ -146,7 +150,7 @@ jobs:
   images:
     name: images (linux)
     runs-on: ubuntu-20.04
-    needs: [cache-deps]
+    needs: [ cache-deps ]
 
     permissions:
       contents: read
@@ -209,7 +213,7 @@ jobs:
   integration:
     name: integration (linux)
     runs-on: ubuntu-20.04
-    needs: [cache-deps, images]
+    needs: [ cache-deps, images ]
 
     permissions:
       contents: read
@@ -217,8 +221,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        num_runners: [5]
-        runner_id: [1, 2, 3, 4, 5]
+        num_runners: [ 5 ]
+        runner_id: [ 1, 2, 3, 4, 5 ]
     steps:
       - name: Checkout
         uses: actions/checkout@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v3.5.2
@@ -466,7 +470,7 @@ jobs:
 
   publish-artifacts:
     runs-on: ubuntu-20.04
-    needs: [lint, unit-test, unit-test-race-detector, artifacts, integration, lint-windows, unit-test-windows, artifact-windows, integration-windows]
+    needs: [ lint, unit-test, unit-test-race-detector, artifacts, integration, lint-windows, unit-test-windows, artifact-windows, integration-windows ]
     permissions:
       contents: write
 
@@ -492,7 +496,7 @@ jobs:
 
   publish-images:
     runs-on: ubuntu-20.04
-    needs: [lint, unit-test, unit-test-race-detector, artifacts, integration, lint-windows, unit-test-windows, artifact-windows, integration-windows]
+    needs: [ lint, unit-test, unit-test-race-detector, artifacts, integration, lint-windows, unit-test-windows, artifact-windows, integration-windows ]
     permissions:
       contents: read
       id-token: write
