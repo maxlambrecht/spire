@@ -3,7 +3,7 @@
 set -e
 
 REPODIR=$(git rev-parse --show-toplevel)
-BINDIR="${REPODIR}/bin/static"
+BINDIR="${REPODIR}/bin"
 
 TAG=${TAG:-$(git log -n1 --pretty=%h)}
 OUTDIR=${OUTDIR:-"${REPODIR}/artifacts"}
@@ -18,10 +18,11 @@ if [[ "$OS" == msys_nt-10.0-* ]] || [[ "$OS" == mingw64_nt-10.0-* ]]; then
     OS=windows 
 fi
 
-# handle the case that we're building for alpine
 if [ "$OS" = "linux" ]; then
     LIBC="-musl"
     TAROPTS=("--owner=root" "--group=root")
+    # Use the static binaries
+    BINDIR="${REPODIR}/bin/static"
 fi
 
 ARTIFACT_EXTENSION=".tar.gz"

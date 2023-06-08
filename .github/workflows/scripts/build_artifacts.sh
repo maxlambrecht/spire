@@ -32,9 +32,9 @@ fi
 
 # Make references the $TAG environment variable set above
 for arch in "${supported_archs[@]}"; do
-    if [[ "$arch" == "arm64" ]]; then
-        CC=aarch64-linux-musl make artifact
+    if [[ "$os" == "Linux" ]]; then
+      GOARCH=$arch CC=musl-gcc make static-artifact
     else
-        CC=musl-gcc make artifact
+      GOARCH=$arch make artifact
     fi
 done

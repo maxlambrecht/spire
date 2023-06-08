@@ -324,7 +324,12 @@ integration-windows:
 
 .PHONY: artifact
 
-artifact: build-static
+artifact: build
+	$(E)OUTDIR="$(OUTDIR)" TAG="$(TAG)" ./script/build-artifact.sh
+
+.PHONY: static-artifact
+
+static-artifact: build-static
 	$(E)OUTDIR="$(OUTDIR)" TAG="$(TAG)" ./script/build-artifact.sh
 
 #############################################################################
