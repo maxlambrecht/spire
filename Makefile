@@ -271,7 +271,9 @@ bin/%: support/k8s/% FORCE | go-check
 # https://7thzero.com/blog/golang-w-sqlite3-docker-scratch-image
 build-static: tidy $(addprefix bin/static/,$(binaries))
 
-go_build_static := $(go_path) go build $(go_flags) -ldflags '$(go_ldflags) -linkmode external -extldflags "-static"' -o
+# Set CC to musl-gcc to enforce the use of musl-gcc as the C compiler
+# This ensures that the resulting artifacts are built with musl libc.
+go_build_static := CC=musl-gcc CGO_ENABLED=1 $(go_path) go build $(go_flags) -ldflags '$(go_ldflags) -linkmode external -extldflags "-static"' -o
 
 bin/static/%: cmd/% FORCE | go-check
 	@echo Building $@…
@@ -324,7 +326,7 @@ integration-windows:
 
 .PHONY: artifact
 
-artifact: build
+artifact: build-static
 	$(E)OUTDIR="$(OUTDIR)" TAG="$(TAG)" ./script/build-artifact.sh
 
 #############################################################################

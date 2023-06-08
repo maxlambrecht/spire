@@ -3,7 +3,7 @@
 set -e
 
 REPODIR=$(git rev-parse --show-toplevel)
-BINDIR="${REPODIR}/bin"
+BINDIR="${REPODIR}/bin/static"
 
 TAG=${TAG:-$(git log -n1 --pretty=%h)}
 OUTDIR=${OUTDIR:-"${REPODIR}/artifacts"}
@@ -20,12 +20,7 @@ fi
 
 # handle the case that we're building for alpine
 if [ "$OS" = "linux" ]; then
-    case $(ldd --version 2>&1) in
-        *GNU\ libc*) LIBC="-glibc" ;;
-        *GLIB*) LIBC="-glibc" ;;
-        *muslr*) LIBC="-musl" ;;
-        *) LIBC="-unknown" ;;
-    esac
+    LIBC="-musl"
     TAROPTS=("--owner=root" "--group=root")
 fi
 
