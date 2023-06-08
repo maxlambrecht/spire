@@ -138,7 +138,7 @@ jobs:
       - name: Install musl-gcc
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y musl-dev libseccomp-dev
       - name: Build artifacts
         run: ./.github/workflows/scripts/build_artifacts.sh ${{ runner.os }}
       - name: Archive artifacts
