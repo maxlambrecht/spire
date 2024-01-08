@@ -258,6 +258,11 @@ endif
 build: tidy $(addprefix bin/,$(binaries))
 
 go_build := $(go_path) go build $(go_flags) -ldflags '$(go_ldflags)' -o
+go_build := GOEXPERIMENT=boringcrypto $(go_build)
+
+#ifeq ($(FIPS_MODE),1)
+#    go_build := GOEXPERIMENT=boringcrypto $(go_build)
+#endif
 
 bin/%: cmd/% FORCE | go-check
 	@echo Building $@…
