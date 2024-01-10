@@ -285,7 +285,9 @@ bin/%: support/% FORCE | go-check
 # https://7thzero.com/blog/golang-w-sqlite3-docker-scratch-image
 build-static: tidy $(addprefix bin/static/,$(binaries))
 
-go_build_static := $(go_path) go build $(go_flags) -ldflags '$(go_ldflags) -linkmode external -extldflags "-static"' -o
+# go_build_static := $(go_path) go build $(go_flags) -ldflags '$(go_ldflags) -linkmode external -extldflags "-static"' -o
+
+go_build_static := $GOEXPERIMENT=boringcrypto (go_path) go build -tags boringcrypto $(go_flags) -ldflags '$(go_ldflags) -linkmode external -extldflags "-static"' -o
 
 bin/static/%: cmd/% FORCE | go-check
 	@echo Building $@…
