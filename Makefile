@@ -26,6 +26,8 @@ help:
 	@echo
 	@echo "$(bold)Build:$(reset)"
 	@echo "  $(cyan)build$(reset)                                 - build all SPIRE binaries (default)"
+	@echo "                                          set USE_BORINGCRYPTO=1 to build with BoringCrypto support"
+	@echo "                                          e.g., USE_BORINGCRYPTO=1 make build"
 	@echo
 	@echo "$(bold)Test:$(reset)"
 	@echo "  $(cyan)test$(reset)                                  - run unit tests"
@@ -257,11 +259,12 @@ endif
 .PHONY: build
 build: tidy $(addprefix bin/,$(binaries))
 
-go_build := $(go_path) go build $(go_flags) -ldflags '$(go_ldflags)' -o
-go_build := GOEXPERIMENT=boringcrypto $(go_build)
+go_build := GOEXPERIMENT=boringcrypto $(go_path) go build -tags boringcrypto $(go_flags) -ldflags '$(go_ldflags)' -o
 
-#ifeq ($(FIPS_MODE),1)
-#    go_build := GOEXPERIMENT=boringcrypto $(go_build)
+# go_build := $(go_path) go build $(go_flags) -ldflags '$(go_ldflags)' -o
+
+#ifeq ($(USE_BORINGCRYPTO),1)
+#    go_build := GOEXPERIMENT=boringcrypto $(go_path) go build -tags boringcrypto $(go_flags) -ldflags '$(go_ldflags)' -o
 #endif
 
 bin/%: cmd/% FORCE | go-check
