@@ -64,7 +64,7 @@ require (
 	github.com/mitchellh/cli v1.1.5
 	github.com/open-policy-agent/opa v0.64.1
 	github.com/prometheus/client_golang v1.19.0
-	github.com/shirou/gopsutil/v3 v3.24.3
+	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/sigstore/cosign/v2 v2.2.4
 	github.com/sigstore/rekor v1.3.6
 	github.com/sigstore/sigstore v1.8.3
@@ -80,7 +80,7 @@ require (
 	golang.org/x/exp v0.0.0-20231108232855-2478ac86f678
 	golang.org/x/net v0.24.0
 	golang.org/x/sync v0.7.0
-	golang.org/x/sys v0.19.0
+	golang.org/x/sys v0.20.0
 	golang.org/x/time v0.5.0
 	google.golang.org/api v0.176.1
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240415180920-8c6c420018be
