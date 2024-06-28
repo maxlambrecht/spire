@@ -205,6 +205,48 @@ func (s *Suite) TestAttest() {
 			expectCode: codes.Internal,
 			expectMsg:  "workloadattestor(unix): supplementary GIDs lookup: some error for PID 14",
 		},
+		{
+			name:   "success discovering symbols",
+			pid:    15,
+			config: "discover_workload_path = true\nworkload_size_limit = -1\nexperimental { discover_symbols = [\"testsymbol\", \"othersymbol\",\"nonexistent\"] }",
+			selectorValues: []string{
+				"uid:1000",
+				"user:u1000",
+				"gid:2000",
+				"group:g2000",
+				fmt.Sprintf("path:%s", filepath.Join("testdata", "binary_with_symbols")),
+				"symbol:testsymbol",
+				"symbol:othersymbol",
+				"symbols:found",
+			},
+			expectCode: codes.OK,
+		},
+		{
+			name:   "no selectors emitted for nonexistent symbols",
+			pid:    15,
+			config: "discover_workload_path = true\nworkload_size_limit = -1\nexperimental { discover_symbols = [\"nonexistent\"] }",
+			selectorValues: []string{
+				"uid:1000",
+				"user:u1000",
+				"gid:2000",
+				"group:g2000",
+				fmt.Sprintf("path:%s", filepath.Join("testdata", "binary_with_symbols")),
+			},
+			expectCode: codes.OK,
+		},
+		{
+			name:   "no selectors emitted for binary without symbols table",
+			pid:    16,
+			config: "discover_workload_path = true\nworkload_size_limit = -1\nexperimental { discover_symbols = [\"testsymbol\"] }",
+			selectorValues: []string{
+				"uid:1000",
+				"user:u1000",
+				"gid:2000",
+				"group:g2000",
+				fmt.Sprintf("path:%s", filepath.Join("testdata", "binary_no_symbols")),
+			},
+			expectCode: codes.OK,
+		},
 	}
 
 	// prepare the "exe" for hashing
@@ -273,7 +315,7 @@ func (p fakeProcess) Uids() ([]int32, error) {
 		return nil, fmt.Errorf("unable to get UIDs for PID %d", p.pid)
 	case 3:
 		return []int32{1999}, nil
-	case 4, 5, 6, 7, 9, 10, 11, 12, 13, 14:
+	case 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16:
 		return []int32{1000}, nil
 	case 8:
 		return []int32{1000, 1100}, nil
@@ -290,7 +332,7 @@ func (p fakeProcess) Gids() ([]int32, error) {
 		return nil, fmt.Errorf("unable to get GIDs for PID %d", p.pid)
 	case 6:
 		return []int32{2999}, nil
-	case 3, 7, 9, 10, 11, 12, 13, 14:
+	case 3, 7, 9, 10, 11, 12, 13, 14, 15, 16:
 		return []int32{2000}, nil
 	case 8:
 		return []int32{2000, 2100}, nil
@@ -318,6 +360,10 @@ func (p fakeProcess) Exe() (string, error) {
 		return filepath.Join(p.dir, "unreadable-exe"), nil
 	case 11, 12:
 		return filepath.Join(p.dir, "exe"), nil
+	case 15:
+		return filepath.Join("testdata", "binary_with_symbols"), nil
+	case 16:
+		return filepath.Join("testdata", "binary_no_symbols"), nil
 	default:
 		return "", fmt.Errorf("unhandled exe test case %d", p.pid)
 	}
@@ -327,6 +373,10 @@ func (p fakeProcess) NamespacedExe() string {
 	switch p.pid {
 	case 11, 12:
 		return filepath.Join(p.dir, "exe")
+	case 15:
+		return filepath.Join("testdata", "binary_with_symbols")
+	case 16:
+		return filepath.Join("testdata", "binary_no_symbols")
 	default:
 		return filepath.Join("/proc", strconv.Itoa(int(p.pid)), "unreadable-exe")
 	}

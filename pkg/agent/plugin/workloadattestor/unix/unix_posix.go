@@ -5,6 +5,8 @@ package unix
 import (
 	"bufio"
 	"context"
+	"debug/elf"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -89,6 +91,12 @@ func (ps PSProcessInfo) Groups() ([]string, error) {
 type Configuration struct {
 	DiscoverWorkloadPath bool  `hcl:"discover_workload_path"`
 	WorkloadSizeLimit    int64 `hcl:"workload_size_limit"`
+
+	Experimental *ExperimentalConfig `hcl:"experimental,omitempty"`
+}
+
+type ExperimentalConfig struct {
+	DiscoverSymbols []string `hcl:"discover_symbols,omitempty"`
 }
 
 type Plugin struct {
@@ -183,6 +191,25 @@ func (p *Plugin) Attest(_ context.Context, req *workloadattestorv1.AttestRequest
 			}
 
 			selectorValues = append(selectorValues, makeSelectorValue("sha256", sha256Digest))
+		}
+
+		if config.Experimental != nil {
+			if config.Experimental.DiscoverSymbols != nil {
+				exePath := p.getNamespacedPath(proc)
+				symbols, err := p.findSymbols(exePath)
+				if err != nil {
+					return nil, err
+				}
+
+				for _, symbol := range symbols {
+					selectorValue := makeSelectorValue("symbol", symbol)
+					selectorValues = append(selectorValues, selectorValue)
+				}
+
+				if len(symbols) > 0 {
+					selectorValues = append(selectorValues, makeSelectorValue("symbols", "found"))
+				}
+			}
 		}
 	}
 
@@ -287,4 +314,48 @@ func getProcPath(pID int32, lastPath string) string {
 		procPath = "/proc"
 	}
 	return filepath.Join(procPath, strconv.FormatInt(int64(pID), 10), lastPath)
+}
+
+func (p *Plugin) getDiscoverSymbols() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.config.Experimental != nil {
+		return p.config.Experimental.DiscoverSymbols
+	}
+	return nil
+}
+
+func (p *Plugin) findSymbols(filePath string) ([]string, error) {
+	symbols := p.getDiscoverSymbols()
+	if symbols == nil {
+		return nil, nil
+	}
+
+	f, err := elf.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file at path %s: %w", filePath, err)
+	}
+	defer f.Close()
+
+	syms, err := f.Symbols()
+	if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
+		return nil, fmt.Errorf("failed to read symbols from ELF file at %s: %w", filePath, err)
+	}
+
+	foundSymbolsMap := make(map[string]struct{})
+	for _, sym := range syms {
+		for _, symbol := range symbols {
+			s := strings.ToLower(symbol)
+			if strings.Contains(strings.ToLower(sym.Name), s) {
+				foundSymbolsMap[s] = struct{}{}
+			}
+		}
+	}
+
+	var foundSymbols []string
+	for sym := range foundSymbolsMap {
+		foundSymbols = append(foundSymbols, sym)
+	}
+
+	return foundSymbols, nil
 }
