@@ -326,35 +326,36 @@ func (p *Plugin) getDiscoverSymbols() []string {
 }
 
 func (p *Plugin) findSymbols(filePath string) ([]string, error) {
-	symbols := p.getDiscoverSymbols()
-	if symbols == nil {
+	discoverSymbols := p.getDiscoverSymbols()
+	if discoverSymbols == nil {
 		return nil, nil
 	}
 
-	f, err := elf.Open(filePath)
+	file, err := elf.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file at path %s: %w", filePath, err)
 	}
-	defer f.Close()
+	defer file.Close()
 
-	syms, err := f.Symbols()
+	symbols, err := file.Symbols()
 	if err != nil && !errors.Is(err, elf.ErrNoSymbols) {
 		return nil, fmt.Errorf("failed to read symbols from ELF file at %s: %w", filePath, err)
 	}
 
 	foundSymbolsMap := make(map[string]struct{})
-	for _, sym := range syms {
-		for _, symbol := range symbols {
-			s := strings.ToLower(symbol)
-			if strings.Contains(strings.ToLower(sym.Name), s) {
-				foundSymbolsMap[s] = struct{}{}
+	for _, fileSymbol := range symbols {
+		fileSymbolNameLower := strings.ToLower(fileSymbol.Name)
+		for _, discoverSymbol := range discoverSymbols {
+			discoverSymbolLower := strings.ToLower(discoverSymbol)
+			if strings.Contains(fileSymbolNameLower, discoverSymbolLower) {
+				foundSymbolsMap[discoverSymbolLower] = struct{}{}
 			}
 		}
 	}
 
 	var foundSymbols []string
-	for sym := range foundSymbolsMap {
-		foundSymbols = append(foundSymbols, sym)
+	for symbol := range foundSymbolsMap {
+		foundSymbols = append(foundSymbols, symbol)
 	}
 
 	return foundSymbols, nil
