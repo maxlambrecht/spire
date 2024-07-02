@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/hcl"
@@ -128,6 +129,8 @@ func (p *Plugin) SetLogger(log hclog.Logger) {
 }
 
 func (p *Plugin) Attest(_ context.Context, req *workloadattestorv1.AttestRequest) (*workloadattestorv1.AttestResponse, error) {
+	start := time.Now()
+
 	config, err := p.getConfig()
 	if err != nil {
 		return nil, err
@@ -185,7 +188,12 @@ func (p *Plugin) Attest(_ context.Context, req *workloadattestorv1.AttestRequest
 
 		if config.WorkloadSizeLimit >= 0 {
 			exePath := p.getNamespacedPath(proc)
+
+			start := time.Now()
 			sha256Digest, err := util.GetSHA256Digest(exePath, config.WorkloadSizeLimit)
+			duration := time.Since(start)
+			p.log.Info("SHA256 digest calculation duration", "exePath", exePath, "duration", duration)
+
 			if err != nil {
 				return nil, status.Error(codes.Internal, err.Error())
 			}
@@ -212,6 +220,9 @@ func (p *Plugin) Attest(_ context.Context, req *workloadattestorv1.AttestRequest
 			}
 		}
 	}
+
+	duration := time.Since(start)
+	p.log.Info("Complete attestation duration", "pid", req.Pid, "duration", duration)
 
 	return &workloadattestorv1.AttestResponse{
 		SelectorValues: selectorValues,
@@ -326,6 +337,8 @@ func (p *Plugin) getDiscoverSymbols() []string {
 }
 
 func (p *Plugin) findSymbols(filePath string) ([]string, error) {
+	start := time.Now() // Start timing
+
 	discoverSymbols := p.getDiscoverSymbols()
 	if discoverSymbols == nil {
 		return nil, nil
@@ -357,6 +370,9 @@ func (p *Plugin) findSymbols(filePath string) ([]string, error) {
 	for symbol := range foundSymbolsMap {
 		foundSymbols = append(foundSymbols, symbol)
 	}
+
+	duration := time.Since(start)
+	p.log.Info("Symbol discovery duration", "filePath", filePath, "duration", duration)
 
 	return foundSymbols, nil
 }
