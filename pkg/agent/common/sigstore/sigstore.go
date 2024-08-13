@@ -508,7 +508,13 @@ func (v *ImageVerifier) fetchSBOMFromCosign(ctx context.Context, imageRef name.R
 			return nil, fmt.Errorf("failed to unmarshal attestation payload: %w", err)
 		}
 
-		v.config.Logger.Debug("Decoded attestation payload", "payload", decodedPayload)
+		// Pretty print the decoded payload
+		payloadJSON, err := json.MarshalIndent(decodedPayload, "", "  ")
+		if err != nil {
+			v.config.Logger.Error("Failed to format decoded payload", "error", err, "attestationIndex", i)
+		} else {
+			v.config.Logger.Debug("Decoded attestation payload", "payload", string(payloadJSON))
+		}
 
 		// Check if the predicateType matches the SBOM type
 		if decodedPayload["predicateType"] == sbomPredicateType {
