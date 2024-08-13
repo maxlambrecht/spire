@@ -494,6 +494,8 @@ func (v *ImageVerifier) fetchSBOMFromCosign(ctx context.Context, imageRef name.R
 		return nil, fmt.Errorf("failed to fetch image attestations: %w", err)
 	}
 
+	v.config.Logger.Debug("Fetched attestations", "count", len(attestations))
+
 	// Iterate over the attestations to find the SBOM with the matching predicate type
 	for _, att := range attestations {
 		payload, err := att.Payload()
@@ -505,6 +507,8 @@ func (v *ImageVerifier) fetchSBOMFromCosign(ctx context.Context, imageRef name.R
 		if err := json.Unmarshal(payload, &decodedPayload); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal attestation payload: %w", err)
 		}
+
+		v.config.Logger.Debug("Decoded attestation payload", "payload", decodedPayload)
 
 		// Check if the predicateType matches the SBOM type
 		if decodedPayload["predicateType"] == sbomPredicateType {
