@@ -511,7 +511,7 @@ func (v *ImageVerifier) fetchSBOMFromCosign(ctx context.Context, imageRef name.R
 		// Pretty print the decoded payload
 		payloadJSON, err := json.MarshalIndent(decodedPayload, "", "  ")
 		if err != nil {
-			v.config.Logger.Error("Failed to format decoded payload", "error", err, "attestationIndex", i)
+			v.config.Logger.Error("Failed to format decoded payload", "error", err)
 		} else {
 			v.config.Logger.Debug("Decoded attestation payload", "payload", string(payloadJSON))
 		}
