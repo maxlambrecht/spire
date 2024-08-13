@@ -241,47 +241,73 @@ func inspectOpenSSLVersion(ctx context.Context, log hclog.Logger, imageName stri
 		return "", err
 	}
 
-	log.Info("Creating container", "imageName", imageName)
-	// Create and start a container to run the OpenSSL command
+	// Create a container
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image: imageName,
 		Cmd:   []string{"openssl", "version"},
+		Tty:   false,
 	}, nil, nil, nil, "")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create Docker container: %w", err)
 	}
+
+	containerID := resp.ID
 
 	// Ensure the container is removed after execution
-	defer cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+	defer func() {
+		timeout := 10
+		t := &timeout
+		cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: t})
+		cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	}()
 
-	log.Info("Starting container")
-	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		return "", err
+	// Start the container
+	if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		return "", fmt.Errorf("failed to start Docker container: %w", err)
 	}
 
-	log.Info("Waiting container")
-	// Capture the command output
-	statusCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
+	// Wait for the container to finish execution
+	statusCh, errCh := cli.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
 	select {
 	case err := <-errCh:
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("error while waiting for container: %w", err)
 		}
 	case <-statusCh:
+		// Container has exited
+	case <-time.After(30 * time.Second):
+		return "", fmt.Errorf("timeout waiting for container to finish")
 	}
 
-	logs, err := cli.ContainerLogs(ctx, resp.ID, container.LogsOptions{ShowStdout: true})
+	// Retrieve the logs from the container
+	logs, err := cli.ContainerLogs(ctx, containerID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to retrieve container logs: %w", err)
 	}
 	defer logs.Close()
 
-	// Read and process the logs (output)
+	// Read and process the logs
 	buf := new(strings.Builder)
 	_, err = io.Copy(buf, logs)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read container logs: %w", err)
 	}
 
-	return strings.TrimSpace(buf.String()), nil
+	// The logs may contain Docker-specific stream headers; remove them
+	output := removeDockerLogHeaders(buf.String())
+
+	return strings.TrimSpace(output), nil
+}
+
+// removeDockerLogHeaders removes the 8-byte headers that Docker attaches to log streams
+func removeDockerLogHeaders(log string) string {
+	var cleanedLines []string
+	for _, line := range strings.Split(log, "\n") {
+		if len(line) > 8 {
+			cleanedLines = append(cleanedLines, line[8:])
+		} else {
+			cleanedLines = append(cleanedLines, line)
+		}
+	}
+	return strings.Join(cleanedLines, "\n")
 }
