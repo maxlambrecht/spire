@@ -3,7 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -149,7 +149,7 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 
 	p.log.Info("Inspecting imageName", "imageName", container.Config.Image)
 	start := time.Now()
-	version, err := inspectOpenSSLVersion(ctx, container.Config.Image)
+	version, err := inspectOpenSSLVersion(ctx, p.log, container.Config.Image)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -235,30 +235,53 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	return &configv1.ConfigureResponse{}, nil
 }
 
-func inspectOpenSSLVersion(ctx context.Context, imageName string) (string, error) {
+func inspectOpenSSLVersion(ctx context.Context, log hclog.Logger, imageName string) (string, error) {
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv)
 	if err != nil {
 		return "", err
 	}
 
-	_, _, err = cli.ImageInspectWithRaw(ctx, imageName)
+	log.Info("Creating container", "imageName", imageName)
+	// Create and start a container to run the OpenSSL command
+	resp, err := cli.ContainerCreate(ctx, &container.Config{
+		Image: imageName,
+		Cmd:   []string{"openssl", "version"},
+	}, nil, nil, nil, "")
 	if err != nil {
 		return "", err
 	}
 
-	// Save the image as a tarball
-	tarPath := "/tmp/image.tar"
-	saveCmd := exec.Command("docker", "save", "-o", tarPath, imageName)
-	if err := saveCmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to save Docker image: %v", err)
+	// Ensure the container is removed after execution
+	defer cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+
+	log.Info("Starting container")
+	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", err
 	}
 
-	// Extract and inspect OpenSSL version
-	cmd := exec.Command("docker", "run", "--rm", imageName, "openssl", "version")
-	output, err := cmd.Output()
+	log.Info("Waiting container")
+	// Capture the command output
+	statusCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return "", err
+		}
+	case <-statusCh:
+	}
+
+	logs, err := cli.ContainerLogs(ctx, resp.ID, container.LogsOptions{ShowStdout: true})
+	if err != nil {
+		return "", err
+	}
+	defer logs.Close()
+
+	// Read and process the logs (output)
+	buf := new(strings.Builder)
+	_, err = io.Copy(buf, logs)
 	if err != nil {
 		return "", err
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(buf.String()), nil
 }
