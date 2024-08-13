@@ -208,7 +208,7 @@ func (v *ImageVerifier) Verify(ctx context.Context, imageID string) ([]string, e
 	selectors = append(selectors, formatDetailsAsSelectors(detailsList)...)
 
 	// Fetch the SBOM using the verified signatures
-	sbomData, err := v.fetchSBOMFromCosign(signatures)
+	sbomData, err := v.fetchSBOMFromCosign(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch SBOM for image %q: %w", imageID, err)
 	}
@@ -470,42 +470,47 @@ func containsRegexChars(s string) bool {
 	return strings.ContainsAny(s, "*+?^${}[]|()")
 }
 
-// fetchSBOMFromCosign fetches the SBOM using Cosign's attestation capabilities with provided signatures.
-func (v *ImageVerifier) fetchSBOMFromCosign(signatures []oci.Signature) ([]byte, error) {
-	v.config.Logger.Debug("Fetching SBOM from cosign")
+func (v *ImageVerifier) fetchSBOMFromCosign(imageRef name.Reference) ([]byte, error) {
+	v.config.Logger.Debug("Fetching SBOM from cosign", "imageRef", imageRef.Name())
 
-	// Iterate over the signatures to find the SBOM attestation
-	for i, sig := range signatures {
-		payload, err := sig.Payload()
-		if err != nil {
-			v.config.Logger.Error("Failed to get signature payload", "index", i, "error", err)
-			continue
-		}
-
-		// Decode the payload into a map for easier inspection
-		var decodedPayload map[string]interface{}
-		if err := json.Unmarshal(payload, &decodedPayload); err != nil {
-			v.config.Logger.Error("Failed to unmarshal signature payload", "index", i, "error", err)
-			continue
-		}
-
-		// Log the decoded payload
-		v.config.Logger.Debug("Decoded signature payload", "index", i, "payload", decodedPayload)
-
-		// Check if the predicate type matches the SBOM type
-		if decodedPayload["predicateType"] == sbomPredicateType {
-			v.config.Logger.Debug("Matching SBOM predicate type found", "index", i)
-			encodedSBOM := decodedPayload["payload"].(string)
-			sbomData, err := base64.StdEncoding.DecodeString(encodedSBOM)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decode SBOM payload: %w", err)
-			}
-			return sbomData, nil
-		}
+	// Fetch the SignedEntity using the image reference
+	se, err := cosignremote.SignedEntity(imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get SignedEntity from image reference: %w", err)
 	}
 
-	// If no SBOM was found, return an error.
-	return nil, fmt.Errorf("SBOM with predicate type %s not found", sbomPredicateType)
+	// Fetch attestations with the given SBOM predicate type
+	attestations, err := cosign.FetchAttestations(se, sbomPredicateType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch image attestations: %w", err)
+	}
+
+	if len(attestations) == 0 {
+		return nil, fmt.Errorf("SBOM with predicate type %s not found", sbomPredicateType)
+	}
+
+	// Assume the first matching attestation contains the SBOM
+	att := attestations[0]
+
+	// Log the decoded payload for debugging
+	decodedPayload, err := base64.StdEncoding.DecodeString(att.PayLoad)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode attestation payload: %w", err)
+	}
+	v.config.Logger.Debug("Decoded SBOM payload", "sbomPayload", string(decodedPayload))
+
+	var sbomData map[string]interface{}
+	if err := json.Unmarshal(decodedPayload, &sbomData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal SBOM data: %w", err)
+	}
+
+	// Extract the SBOM data from the payload
+	sbomDataBytes, err := json.Marshal(sbomData["predicate"])
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract SBOM data from attestation: %w", err)
+	}
+
+	return sbomDataBytes, nil
 }
 
 type SBOM struct {
