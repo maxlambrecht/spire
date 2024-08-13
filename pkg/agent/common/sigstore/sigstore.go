@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,7 +15,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/hashicorp/go-hclog"
 	"github.com/sigstore/cosign/v2/pkg/cosign"
 	"github.com/sigstore/cosign/v2/pkg/oci"
@@ -36,7 +34,8 @@ const (
 )
 
 var (
-	oidcIssuerOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 1}
+	oidcIssuerOID     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 1}
+	sbomPredicateType = "https://spdx.dev/Document"
 )
 
 type Verifier interface {
@@ -209,11 +208,17 @@ func (v *ImageVerifier) Verify(ctx context.Context, imageID string) ([]string, e
 
 	selectors = append(selectors, formatDetailsAsSelectors(detailsList)...)
 
-	sbomSelectors, err := v.FetchAndVerifySBOM(ctx, imageID)
+	sbomData, err := v.FetchSBOMFromCosign(ctx, imageRef)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch and verify SBOM for image %q: %w", imageID, err)
+		return nil, fmt.Errorf("failed to fetch SBOM for image %q: %w", imageID, err)
 	}
 
+	sbom, err := parseSBOM(sbomData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse SBOM for image %q: %w", imageID, err)
+	}
+
+	sbomSelectors := generateSelectorsFromSBOM(sbom)
 	selectors = append(selectors, sbomSelectors...)
 
 	v.verificationCache.Store(imageID, selectors)
@@ -463,93 +468,76 @@ func containsRegexChars(s string) bool {
 	return strings.ContainsAny(s, "*+?^${}[]|()")
 }
 
-// FetchAndVerifySBOM fetches the SBOM from the Docker registry for a given imageID, parses it, and generates selectors based on its contents.
-func (v *ImageVerifier) FetchAndVerifySBOM(ctx context.Context, imageID string) ([]string, error) {
-	v.config.Logger.Debug("Fetching SBOM for image", telemetry.ImageID, imageID)
+// FetchSBOMFromCosign fetches the SBOM using Cosign's attestation capabilities.
+func (v *ImageVerifier) FetchSBOMFromCosign(ctx context.Context, imageRef name.Reference) ([]byte, error) {
+	authOption := remote.WithAuthFromKeychain(authn.DefaultKeychain)
+	co := &cosign.CheckOpts{
+		RegistryClientOpts: []cosignremote.Option{cosignremote.WithRemoteOptions(authOption)},
+	}
 
-	imageRef, err := name.ParseReference(imageID)
+	// Fetch the attestations for the image
+	attestations, _, err := cosign.VerifyImageAttestations(ctx, imageRef, co)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse image reference: %w", err)
+		return nil, fmt.Errorf("failed to fetch image attestations: %w", err)
 	}
 
-	// Fetch the SBOM using the go-containerregistry library
-	sbomData, err := fetchSBOMFromRegistry(ctx, imageRef)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch SBOM: %w", err)
-	}
-
-	// Parse the SBOM
-	sbom, err := parseSBOM(sbomData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse SBOM: %w", err)
-	}
-
-	// Generate selectors based on the SBOM
-	selectors := generateSelectorsFromSBOM(sbom)
-	return selectors, nil
-}
-
-// generateSelectorsFromSBOM generates selectors based on the components listed in the SBOM.
-func generateSelectorsFromSBOM(sbom *SBOM) []string {
-	var selectors []string
-
-	for _, component := range sbom.Components {
-		// Example: Check for OpenSSL component and its version
-		if component.Name == "openssl" {
-			versionSelector := fmt.Sprintf("sbom:component:openssl:version:%s", component.Version)
-			selectors = append(selectors, versionSelector)
-		}
-
-		// Add other relevant checks and selectors here
-		// e.g., license, vulnerabilities, etc.
-	}
-
-	return selectors
-}
-
-// fetchSBOMFromRegistry fetches the SBOM from the image layers in the registry.
-func fetchSBOMFromRegistry(ctx context.Context, imageRef name.Reference) ([]byte, error) {
-	// Use the remote package from go-containerregistry to fetch the manifest and image layers.
-	desc, err := remote.Get(imageRef, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
-	if err != nil {
-		return nil, fmt.Errorf("failed to get image descriptor: %w", err)
-	}
-
-	image, err := desc.Image()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get image from descriptor: %w", err)
-	}
-
-	layers, err := image.Layers()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get image layers: %w", err)
-	}
-
-	for _, layer := range layers {
-		// Check if the layer media type matches the SBOM media type.
-		mt, err := layer.MediaType()
+	// Iterate over attestations to find the SBOM with the matching predicate type
+	for _, att := range attestations {
+		payload, err := att.Payload()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get layer media type: %w", err)
+			return nil, fmt.Errorf("failed to get attestation payload: %w", err)
 		}
 
-		if mt == types.MediaType(sbomMediaType) {
-			rc, err := layer.Uncompressed()
-			if err != nil {
-				return nil, fmt.Errorf("failed to uncompress SBOM layer: %w", err)
-			}
-			defer rc.Close()
+		var decodedPayload map[string]interface{}
+		if err := json.Unmarshal(payload, &decodedPayload); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal attestation payload: %w", err)
+		}
 
-			sbomData, err := io.ReadAll(rc)
+		// Check if the predicateType matches the SBOM type
+		if decodedPayload["predicateType"] == sbomPredicateType {
+			encodedSBOM := decodedPayload["payload"].(string)
+			sbomData, err := base64.StdEncoding.DecodeString(encodedSBOM)
 			if err != nil {
-				return nil, fmt.Errorf("failed to read SBOM data: %w", err)
+				return nil, fmt.Errorf("failed to decode SBOM payload: %w", err)
 			}
-
 			return sbomData, nil
 		}
 	}
 
-	// If no SBOM layer was found, return an error.
-	return nil, fmt.Errorf("SBOM not found in image: %s", imageRef.Name())
+	return nil, fmt.Errorf("SBOM with predicate type %s not found", sbomPredicateType)
+}
+
+type SBOM struct {
+	SPDXID            string       `json:"SPDXID"`
+	Name              string       `json:"name"`
+	SPDXVersion       string       `json:"spdxVersion"`
+	CreationInfo      CreationInfo `json:"creationInfo"`
+	DataLicense       string       `json:"dataLicense"`
+	DocumentNamespace string       `json:"documentNamespace"`
+	Packages          []Package    `json:"packages"`
+}
+
+type CreationInfo struct {
+	Created            string   `json:"created"`
+	Creators           []string `json:"creators"`
+	LicenseListVersion string   `json:"licenseListVersion"`
+}
+
+type Package struct {
+	SPDXID           string        `json:"SPDXID"`
+	Name             string        `json:"name"`
+	LicenseConcluded string        `json:"licenseConcluded"`
+	VersionInfo      string        `json:"versionInfo"`
+	ExternalRefs     []ExternalRef `json:"externalRefs"`
+	LicenseDeclared  string        `json:"licenseDeclared"`
+	DownloadLocation string        `json:"downloadLocation"`
+	SourceInfo       string        `json:"sourceInfo"`
+}
+
+type ExternalRef struct {
+	ReferenceCategory string `json:"referenceCategory"`
+	ReferenceLocator  string `json:"referenceLocator"`
+	ReferenceType     string `json:"referenceType"`
 }
 
 // parseSBOM parses the SBOM data into a structured format.
@@ -562,14 +550,39 @@ func parseSBOM(sbomData []byte) (*SBOM, error) {
 	return &sbom, nil
 }
 
-// SBOM represents a simple structure for the parsed SBOM.
-// This should be adapted to the actual SBOM structure used.
-type SBOM struct {
-	Components []Component `json:"components"`
-}
+// generateSelectorsFromSBOM generates selectors based on the components listed in the SBOM.
+// generateSelectorsFromSBOM generates selectors based on key components and metadata in the SBOM relevant to Go services.
+func generateSelectorsFromSBOM(sbom *SBOM) []string {
+	var selectors []string
 
-// Component represents a software component listed in the SBOM.
-type Component struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	for _, pkg := range sbom.Packages {
+		// Create selectors based on package name and version
+		nameSelector := fmt.Sprintf("sbom:package:name:%s", pkg.Name)
+		versionSelector := fmt.Sprintf("sbom:package:%s:version:%s", pkg.Name, pkg.VersionInfo)
+		selectors = append(selectors, nameSelector, versionSelector)
+
+		// Create selectors based on licenses declared
+		if pkg.LicenseDeclared != "" && pkg.LicenseDeclared != "NONE" {
+			licenseSelector := fmt.Sprintf("sbom:package:%s:license:%s", pkg.Name, pkg.LicenseDeclared)
+			selectors = append(selectors, licenseSelector)
+		}
+
+		// Create selectors for CPE references
+		for _, ref := range pkg.ExternalRefs {
+			if ref.ReferenceType == "cpe23Type" {
+				cpeSelector := fmt.Sprintf("sbom:package:%s:cpe:%s", pkg.Name, ref.ReferenceLocator)
+				selectors = append(selectors, cpeSelector)
+			}
+		}
+
+		// Create selectors for PURL references
+		for _, ref := range pkg.ExternalRefs {
+			if ref.ReferenceType == "purl" {
+				purlSelector := fmt.Sprintf("sbom:package:%s:purl:%s", pkg.Name, ref.ReferenceLocator)
+				selectors = append(selectors, purlSelector)
+			}
+		}
+	}
+
+	return selectors
 }
