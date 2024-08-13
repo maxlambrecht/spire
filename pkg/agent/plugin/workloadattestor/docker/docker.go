@@ -3,9 +3,11 @@ package docker
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -145,6 +147,16 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 		}
 	}
 
+	start := time.Now()
+	version, err := inspectOpenSSLVersion(container.Config.Image)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		p.log.Error("Failed to inspect OpenSSL version", "error")
+	} else {
+		p.log.Info("OpenSSL version", "version", version, "latency", elapsed)
+	}
+
 	return &workloadattestorv1.AttestResponse{
 		SelectorValues: selectors,
 	}, nil
@@ -220,4 +232,34 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	p.c = containerHelper
 	p.sigstoreVerifier = sigstoreVerifier
 	return &configv1.ConfigureResponse{}, nil
+}
+
+func inspectOpenSSLVersion(imageName string) (string, error) {
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv)
+	if err != nil {
+		return "", err
+	}
+
+	ctx := context.Background()
+
+	_, _, err = cli.ImageInspectWithRaw(ctx, imageName)
+	if err != nil {
+		return "", err
+	}
+
+	// Save the image as a tarball
+	tarPath := "/tmp/" + imageName + ".tar"
+	saveCmd := exec.Command("docker", "save", "-o", tarPath, imageName)
+	if err := saveCmd.Run(); err != nil {
+		return "", fmt.Errorf("failed to save Docker image: %v", err)
+	}
+
+	// Extract and inspect OpenSSL version
+	cmd := exec.Command("docker", "run", "--rm", imageName, "openssl", "version")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(string(output)), nil
 }
