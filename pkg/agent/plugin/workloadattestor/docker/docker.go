@@ -236,7 +236,7 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 }
 
 func inspectOpenSSLVersion(ctx context.Context, log hclog.Logger, imageName string) (string, error) {
-	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv)
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
 		return "", err
 	}
@@ -293,21 +293,6 @@ func inspectOpenSSLVersion(ctx context.Context, log hclog.Logger, imageName stri
 		return "", fmt.Errorf("failed to read container logs: %w", err)
 	}
 
-	// The logs may contain Docker-specific stream headers; remove them
-	output := removeDockerLogHeaders(buf.String())
+	return strings.TrimSpace(buf.String()), nil
 
-	return strings.TrimSpace(output), nil
-}
-
-// removeDockerLogHeaders removes the 8-byte headers that Docker attaches to log streams
-func removeDockerLogHeaders(log string) string {
-	var cleanedLines []string
-	for _, line := range strings.Split(log, "\n") {
-		if len(line) > 8 {
-			cleanedLines = append(cleanedLines, line[8:])
-		} else {
-			cleanedLines = append(cleanedLines, line)
-		}
-	}
-	return strings.Join(cleanedLines, "\n")
 }
