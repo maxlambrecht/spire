@@ -207,16 +207,19 @@ func (v *ImageVerifier) Verify(ctx context.Context, imageID string) ([]string, e
 
 	selectors = append(selectors, formatDetailsAsSelectors(detailsList)...)
 
-	sbomData, err := v.fetchSBOMFromCosign(ctx, imageRef)
+	// Fetch the SBOM using the verified signatures
+	sbomData, err := v.fetchSBOMFromCosign(signatures)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch SBOM for image %q: %w", imageID, err)
 	}
 
+	// Parse the SBOM data
 	sbom, err := parseSBOM(sbomData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse SBOM for image %q: %w", imageID, err)
 	}
 
+	// Generate selectors based on the SBOM
 	sbomSelectors := generateSelectorsFromSBOM(sbom)
 	selectors = append(selectors, sbomSelectors...)
 
@@ -467,57 +470,31 @@ func containsRegexChars(s string) bool {
 	return strings.ContainsAny(s, "*+?^${}[]|()")
 }
 
-// fetchSBOMFromCosign fetches the SBOM using Cosign's attestation capabilities.
-func (v *ImageVerifier) fetchSBOMFromCosign(ctx context.Context, imageRef name.Reference) ([]byte, error) {
-	registryURL := imageRef.Context().RegistryStr()
-	authOption, exists := v.authOptions[registryURL]
-	if !exists {
-		authOption = remote.WithAuthFromKeychain(authn.DefaultKeychain)
-	}
+// fetchSBOMFromCosign fetches the SBOM using Cosign's attestation capabilities with provided signatures.
+func (v *ImageVerifier) fetchSBOMFromCosign(signatures []oci.Signature) ([]byte, error) {
+	v.config.Logger.Debug("Fetching SBOM from cosign")
 
-	// Prepare the CheckOpts using the existing verifier configuration
-	checkOptions := &cosign.CheckOpts{
-		RekorClient:        v.rekorClient,
-		RootCerts:          v.fulcioRoots,
-		IntermediateCerts:  v.fulcioIntermediates,
-		RekorPubKeys:       v.rekorPublicKeys,
-		CTLogPubKeys:       v.ctLogPublicKeys,
-		Identities:         v.allowedIdentities,
-		IgnoreSCT:          v.config.IgnoreSCT,
-		IgnoreTlog:         v.config.IgnoreTlog,
-		RegistryClientOpts: []cosignremote.Option{cosignremote.WithRemoteOptions(authOption)},
-	}
-
-	// Fetch the attestations for the image using Cosign
-	attestations, _, err := cosign.VerifyImageAttestations(ctx, imageRef, checkOptions)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch image attestations: %w", err)
-	}
-
-	v.config.Logger.Debug("Fetched attestations", "count", len(attestations))
-
-	// Iterate over the attestations to find the SBOM with the matching predicate type
-	for _, att := range attestations {
-		payload, err := att.Payload()
+	// Iterate over the signatures to find the SBOM attestation
+	for i, sig := range signatures {
+		payload, err := sig.Payload()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get attestation payload: %w", err)
+			v.config.Logger.Error("Failed to get signature payload", "index", i, "error", err)
+			continue
 		}
 
+		// Decode the payload into a map for easier inspection
 		var decodedPayload map[string]interface{}
 		if err := json.Unmarshal(payload, &decodedPayload); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal attestation payload: %w", err)
+			v.config.Logger.Error("Failed to unmarshal signature payload", "index", i, "error", err)
+			continue
 		}
 
-		// Pretty print the decoded payload
-		payloadJSON, err := json.MarshalIndent(decodedPayload, "", "  ")
-		if err != nil {
-			v.config.Logger.Error("Failed to format decoded payload", "error", err)
-		} else {
-			v.config.Logger.Debug("Decoded attestation payload", "payload", string(payloadJSON))
-		}
+		// Log the decoded payload
+		v.config.Logger.Debug("Decoded signature payload", "index", i, "payload", decodedPayload)
 
-		// Check if the predicateType matches the SBOM type
+		// Check if the predicate type matches the SBOM type
 		if decodedPayload["predicateType"] == sbomPredicateType {
+			v.config.Logger.Debug("Matching SBOM predicate type found", "index", i)
 			encodedSBOM := decodedPayload["payload"].(string)
 			sbomData, err := base64.StdEncoding.DecodeString(encodedSBOM)
 			if err != nil {
@@ -527,6 +504,7 @@ func (v *ImageVerifier) fetchSBOMFromCosign(ctx context.Context, imageRef name.R
 		}
 	}
 
+	// If no SBOM was found, return an error.
 	return nil, fmt.Errorf("SBOM with predicate type %s not found", sbomPredicateType)
 }
 
