@@ -30,7 +30,6 @@ const (
 	imageSignatureVerifiedSelector    = "image-signature:verified"
 	imageAttestationsVerifiedSelector = "image-attestations:verified"
 	publicRekorURL                    = "https://rekor.sigstore.dev"
-	sbomMediaType                     = "application/vnd.cyclonedx+json"
 )
 
 var (
@@ -208,7 +207,7 @@ func (v *ImageVerifier) Verify(ctx context.Context, imageID string) ([]string, e
 
 	selectors = append(selectors, formatDetailsAsSelectors(detailsList)...)
 
-	sbomData, err := v.FetchSBOMFromCosign(ctx, imageRef)
+	sbomData, err := v.fetchSBOMFromCosign(ctx, imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch SBOM for image %q: %w", imageID, err)
 	}
@@ -468,20 +467,34 @@ func containsRegexChars(s string) bool {
 	return strings.ContainsAny(s, "*+?^${}[]|()")
 }
 
-// FetchSBOMFromCosign fetches the SBOM using Cosign's attestation capabilities.
-func (v *ImageVerifier) FetchSBOMFromCosign(ctx context.Context, imageRef name.Reference) ([]byte, error) {
-	authOption := remote.WithAuthFromKeychain(authn.DefaultKeychain)
-	co := &cosign.CheckOpts{
+// fetchSBOMFromCosign fetches the SBOM using Cosign's attestation capabilities.
+func (v *ImageVerifier) fetchSBOMFromCosign(ctx context.Context, imageRef name.Reference) ([]byte, error) {
+	registryURL := imageRef.Context().RegistryStr()
+	authOption, exists := v.authOptions[registryURL]
+	if !exists {
+		authOption = remote.WithAuthFromKeychain(authn.DefaultKeychain)
+	}
+
+	// Prepare the CheckOpts using the existing verifier configuration
+	checkOptions := &cosign.CheckOpts{
+		RekorClient:        v.rekorClient,
+		RootCerts:          v.fulcioRoots,
+		IntermediateCerts:  v.fulcioIntermediates,
+		RekorPubKeys:       v.rekorPublicKeys,
+		CTLogPubKeys:       v.ctLogPublicKeys,
+		Identities:         v.allowedIdentities,
+		IgnoreSCT:          v.config.IgnoreSCT,
+		IgnoreTlog:         v.config.IgnoreTlog,
 		RegistryClientOpts: []cosignremote.Option{cosignremote.WithRemoteOptions(authOption)},
 	}
 
-	// Fetch the attestations for the image
-	attestations, _, err := cosign.VerifyImageAttestations(ctx, imageRef, co)
+	// Fetch the attestations for the image using Cosign
+	attestations, _, err := cosign.VerifyImageAttestations(ctx, imageRef, checkOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch image attestations: %w", err)
 	}
 
-	// Iterate over attestations to find the SBOM with the matching predicate type
+	// Iterate over the attestations to find the SBOM with the matching predicate type
 	for _, att := range attestations {
 		payload, err := att.Payload()
 		if err != nil {
