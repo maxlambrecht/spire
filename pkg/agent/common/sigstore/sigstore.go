@@ -5,8 +5,10 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/hashicorp/go-hclog"
 	"github.com/sigstore/cosign/v2/pkg/cosign"
 	"github.com/sigstore/cosign/v2/pkg/oci"
@@ -29,6 +32,7 @@ const (
 	imageSignatureVerifiedSelector    = "image-signature:verified"
 	imageAttestationsVerifiedSelector = "image-attestations:verified"
 	publicRekorURL                    = "https://rekor.sigstore.dev"
+	sbomMediaType                     = "application/vnd.cyclonedx+json"
 )
 
 var (
@@ -204,6 +208,13 @@ func (v *ImageVerifier) Verify(ctx context.Context, imageID string) ([]string, e
 	}
 
 	selectors = append(selectors, formatDetailsAsSelectors(detailsList)...)
+
+	sbomSelectors, err := v.FetchAndVerifySBOM(ctx, imageID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch and verify SBOM for image %q: %w", imageID, err)
+	}
+
+	selectors = append(selectors, sbomSelectors...)
 
 	v.verificationCache.Store(imageID, selectors)
 
@@ -450,4 +461,115 @@ func processAllowedIdentities(allowedIdentities map[string][]string) []cosign.Id
 func containsRegexChars(s string) bool {
 	// check for characters commonly used in regex.
 	return strings.ContainsAny(s, "*+?^${}[]|()")
+}
+
+// FetchAndVerifySBOM fetches the SBOM from the Docker registry for a given imageID, parses it, and generates selectors based on its contents.
+func (v *ImageVerifier) FetchAndVerifySBOM(ctx context.Context, imageID string) ([]string, error) {
+	v.config.Logger.Debug("Fetching SBOM for image", telemetry.ImageID, imageID)
+
+	imageRef, err := name.ParseReference(imageID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse image reference: %w", err)
+	}
+
+	// Fetch the SBOM using the go-containerregistry library
+	sbomData, err := fetchSBOMFromRegistry(ctx, imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch SBOM: %w", err)
+	}
+
+	// Parse the SBOM
+	sbom, err := parseSBOM(sbomData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse SBOM: %w", err)
+	}
+
+	// Generate selectors based on the SBOM
+	selectors := generateSelectorsFromSBOM(sbom)
+	return selectors, nil
+}
+
+// generateSelectorsFromSBOM generates selectors based on the components listed in the SBOM.
+func generateSelectorsFromSBOM(sbom *SBOM) []string {
+	var selectors []string
+
+	for _, component := range sbom.Components {
+		// Example: Check for OpenSSL component and its version
+		if component.Name == "openssl" {
+			versionSelector := fmt.Sprintf("sbom:component:openssl:version:%s", component.Version)
+			selectors = append(selectors, versionSelector)
+		}
+
+		// Add other relevant checks and selectors here
+		// e.g., license, vulnerabilities, etc.
+	}
+
+	return selectors
+}
+
+// fetchSBOMFromRegistry fetches the SBOM from the image layers in the registry.
+func fetchSBOMFromRegistry(ctx context.Context, imageRef name.Reference) ([]byte, error) {
+	// Use the remote package from go-containerregistry to fetch the manifest and image layers.
+	desc, err := remote.Get(imageRef, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image descriptor: %w", err)
+	}
+
+	image, err := desc.Image()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image from descriptor: %w", err)
+	}
+
+	layers, err := image.Layers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get image layers: %w", err)
+	}
+
+	for _, layer := range layers {
+		// Check if the layer media type matches the SBOM media type.
+		mt, err := layer.MediaType()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get layer media type: %w", err)
+		}
+
+		if mt == types.MediaType(sbomMediaType) {
+			rc, err := layer.Uncompressed()
+			if err != nil {
+				return nil, fmt.Errorf("failed to uncompress SBOM layer: %w", err)
+			}
+			defer rc.Close()
+
+			sbomData, err := io.ReadAll(rc)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read SBOM data: %w", err)
+			}
+
+			return sbomData, nil
+		}
+	}
+
+	// If no SBOM layer was found, return an error.
+	return nil, fmt.Errorf("SBOM not found in image: %s", imageRef.Name())
+}
+
+// parseSBOM parses the SBOM data into a structured format.
+func parseSBOM(sbomData []byte) (*SBOM, error) {
+	var sbom SBOM
+	err := json.Unmarshal(sbomData, &sbom)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal SBOM: %w", err)
+	}
+	return &sbom, nil
+}
+
+// SBOM represents a simple structure for the parsed SBOM.
+// This should be adapted to the actual SBOM structure used.
+type SBOM struct {
+	Components []Component `json:"components"`
+}
+
+// Component represents a software component listed in the SBOM.
+type Component struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }

@@ -3,11 +3,9 @@ package docker
 import (
 	"context"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -147,17 +145,6 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 		}
 	}
 
-	p.log.Info("Inspecting imageName", "imageName", container.Config.Image)
-	start := time.Now()
-	version, err := inspectOpenSSLVersion(ctx, p.log, container.Config.Image)
-	elapsed := time.Since(start)
-
-	if err != nil {
-		p.log.Error("Failed to inspect OpenSSL version", "error")
-	} else {
-		p.log.Info("OpenSSL version", "version", version, "latency", elapsed)
-	}
-
 	return &workloadattestorv1.AttestResponse{
 		SelectorValues: selectors,
 	}, nil
@@ -233,72 +220,4 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	p.c = containerHelper
 	p.sigstoreVerifier = sigstoreVerifier
 	return &configv1.ConfigureResponse{}, nil
-}
-
-func inspectOpenSSLVersion(ctx context.Context, log hclog.Logger, imageName string) (string, error) {
-	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
-	if err != nil {
-		return "", err
-	}
-
-	log.Info("Creating container")
-
-	// Create a container
-	resp, err := cli.ContainerCreate(ctx, &container.Config{
-		Image: imageName,
-		Cmd:   []string{"openssl", "version"},
-		Tty:   false,
-	}, nil, nil, nil, "")
-	if err != nil {
-		return "", fmt.Errorf("failed to create Docker container: %w", err)
-	}
-
-	containerID := resp.ID
-
-	// Ensure the container is removed after execution
-	defer func() {
-		timeout := 10
-		t := &timeout
-		cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: t})
-		cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
-	}()
-
-	log.Info("Starting container", "id", containerID)
-
-	// Start the container
-	if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-		return "", fmt.Errorf("failed to start Docker container: %w", err)
-	}
-
-	log.Info("Waiting for Docker container", "id", containerID)
-
-	// Wait for the container to finish execution
-	statusCh, errCh := cli.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return "", fmt.Errorf("error while waiting for container: %w", err)
-		}
-	case <-statusCh:
-		// Container has exited
-	case <-time.After(30 * time.Second):
-		return "", fmt.Errorf("timeout waiting for container to finish")
-	}
-
-	// Retrieve the logs from the container
-	logs, err := cli.ContainerLogs(ctx, containerID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
-	if err != nil {
-		return "", fmt.Errorf("failed to retrieve container logs: %w", err)
-	}
-	defer logs.Close()
-
-	// Read and process the logs
-	buf := new(strings.Builder)
-	_, err = io.Copy(buf, logs)
-	if err != nil {
-		return "", fmt.Errorf("failed to read container logs: %w", err)
-	}
-
-	return strings.TrimSpace(buf.String()), nil
-
 }
