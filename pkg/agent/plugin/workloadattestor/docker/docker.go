@@ -241,6 +241,8 @@ func inspectOpenSSLVersion(ctx context.Context, log hclog.Logger, imageName stri
 		return "", err
 	}
 
+	log.Info("Creating container")
+
 	// Create a container
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image: imageName,
@@ -261,10 +263,14 @@ func inspectOpenSSLVersion(ctx context.Context, log hclog.Logger, imageName stri
 		cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
 	}()
 
+	log.Info("Starting container", "id", containerID)
+
 	// Start the container
 	if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 		return "", fmt.Errorf("failed to start Docker container: %w", err)
 	}
+
+	log.Info("Waiting for Docker container", "id", containerID)
 
 	// Wait for the container to finish execution
 	statusCh, errCh := cli.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
