@@ -147,8 +147,9 @@ func (p *Plugin) Attest(ctx context.Context, req *workloadattestorv1.AttestReque
 		}
 	}
 
+	p.log.Info("Inspecting imageName", "imageName", container.Config.Image)
 	start := time.Now()
-	version, err := inspectOpenSSLVersion(container.Config.Image)
+	version, err := inspectOpenSSLVersion(ctx, container.Config.Image)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -234,13 +235,11 @@ func (p *Plugin) Configure(ctx context.Context, req *configv1.ConfigureRequest) 
 	return &configv1.ConfigureResponse{}, nil
 }
 
-func inspectOpenSSLVersion(imageName string) (string, error) {
+func inspectOpenSSLVersion(ctx context.Context, imageName string) (string, error) {
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv)
 	if err != nil {
 		return "", err
 	}
-
-	ctx := context.Background()
 
 	_, _, err = cli.ImageInspectWithRaw(ctx, imageName)
 	if err != nil {
@@ -248,7 +247,7 @@ func inspectOpenSSLVersion(imageName string) (string, error) {
 	}
 
 	// Save the image as a tarball
-	tarPath := "/tmp/" + imageName + ".tar"
+	tarPath := "/tmp/image.tar"
 	saveCmd := exec.Command("docker", "save", "-o", tarPath, imageName)
 	if err := saveCmd.Run(); err != nil {
 		return "", fmt.Errorf("failed to save Docker image: %v", err)
